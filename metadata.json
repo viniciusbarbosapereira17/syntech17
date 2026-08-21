@@ -1,0 +1,7 @@
+{
+  "name": "SYNTECH DC - Disparos Corporativos",
+  "description": "Plataforma SaaS multi-tenant corporativa para gestão e disparo de mensagens em massa, automações, contatos e campanhas com painel administrativo e portal do cliente.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
