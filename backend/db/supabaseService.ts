@@ -328,6 +328,21 @@ export class SupabaseDatabaseService {
     return mapCompany(data);
   }
 
+  async findCompanyByCnpj(cnpj: string): Promise<Company | null> {
+    const supabase = getSupabase();
+    if (!supabase) return null;
+
+    const cleanCnpj = cnpj.replace(/\D/g, '');
+    const { data, error } = await supabase
+      .from('companies')
+      .select('*')
+      .or(`cnpj.eq.${cnpj},cnpj.eq.${cleanCnpj}`)
+      .maybeSingle();
+
+    if (error || !data) return null;
+    return mapCompany(data);
+  }
+
   async getAllCompanies(search?: string, status?: string): Promise<Company[]> {
     const supabase = getSupabase();
     if (!supabase) return [];
@@ -350,7 +365,7 @@ export class SupabaseDatabaseService {
     const supabase = getSupabase();
     if (!supabase) return null;
 
-    const id = payload.id || `comp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const id = payload.id || crypto.randomUUID();
     const record = {
       id,
       name: payload.name,
@@ -359,11 +374,11 @@ export class SupabaseDatabaseService {
       email: payload.email,
       phone: payload.phone,
       status: payload.status || 'ACTIVE',
-      plan_id: payload.planId,
+      plan_id: payload.planId || null,
       monthly_quota: payload.monthlyQuota || 50000,
       used_quota: payload.usedQuota || 0,
       contact_limit: payload.contactLimit || 100000,
-      sender_phone: payload.senderPhone,
+      sender_phone: payload.senderPhone || null,
       sender_verified: payload.senderVerified || false,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -376,10 +391,26 @@ export class SupabaseDatabaseService {
       .single();
 
     if (error || !data) {
-      console.error('[Supabase] Error creating company:', error);
+      console.error('[Supabase] Error creating company:', error?.message || error, error?.details || '');
       return null;
     }
     return mapCompany(data);
+  }
+
+  async deleteCompany(id: string): Promise<boolean> {
+    const supabase = getSupabase();
+    if (!supabase) return false;
+
+    const { error } = await supabase
+      .from('companies')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      console.error('[Supabase] Error deleting company:', error);
+      return false;
+    }
+    return true;
   }
 
   async updateCompany(id: string, updates: Partial<Company>): Promise<Company | null> {
@@ -473,16 +504,16 @@ export class SupabaseDatabaseService {
     const supabase = getSupabase();
     if (!supabase) return null;
 
-    const id = payload.id || `usr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const id = payload.id || crypto.randomUUID();
     const record = {
       id,
       company_id: payload.companyId,
       name: payload.name,
       email: payload.email?.toLowerCase().trim(),
-      password_hash: 'syntech_auth_bcrypt_hash',
+      password_hash: (payload as any).password_hash || (payload as any).passwordHash || 'syntech_auth_bcrypt_hash',
       role: payload.role || 'CLIENT_ADMIN',
-      phone: payload.phone,
-      avatar_url: payload.avatarUrl,
+      phone: payload.phone || null,
+      avatar_url: payload.avatarUrl || null,
       is_active: payload.isActive !== false,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -495,10 +526,26 @@ export class SupabaseDatabaseService {
       .single();
 
     if (error || !data) {
-      console.error('[Supabase] Error creating user:', error);
+      console.error('[Supabase] Error creating user:', error?.message || error, error?.details || '');
       return null;
     }
     return mapUser(data);
+  }
+
+  async deleteUser(id: string): Promise<boolean> {
+    const supabase = getSupabase();
+    if (!supabase) return false;
+
+    const { error } = await supabase
+      .from('users')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      console.error('[Supabase] Error deleting user:', error);
+      return false;
+    }
+    return true;
   }
 
   async updateUser(id: string, updates: Partial<User>): Promise<User | null> {

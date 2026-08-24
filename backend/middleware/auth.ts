@@ -26,21 +26,13 @@ export async function authMiddleware(req: AuthenticatedRequest, res: Response, n
     user = await supabaseService.findUserById(targetUserId);
   }
 
-  // 2. Fallback to in-memory store if not in Supabase or Supabase is offline
+  // 2. Fallback to store only if user was specifically requested by ID and exists in store
   if (!user && targetUserId) {
     user = db.users.find(u => u.id === targetUserId && u.isActive) || null;
   }
 
-  // 3. Fallback default user for immediate trial exploration if unauthenticated
-  if (!user) {
-    user = await supabaseService.findUserById('usr-farmavida-roberto');
-    if (!user) {
-      user = db.users.find(u => u.id === 'usr-farmavida-roberto') || null;
-    }
-  }
-
   if (!user || !user.isActive) {
-    return res.status(401).json({ error: 'Não autorizado. Usuário não encontrado ou inativo.' });
+    return res.status(401).json({ error: 'Não autorizado. Sessão inválida ou expirada.' });
   }
 
   req.user = user;

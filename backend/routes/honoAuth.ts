@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { HonoContextEnv } from '../types/workerEnv.js';
 import { supabaseService } from '../db/supabaseService.js';
 import { db } from '../db/store.js';
+import { getSupabase } from '../db/supabaseClient.js';
 import { honoAuthMiddleware } from '../middleware/honoAuth.js';
 import { Company, User } from '../../shared/types.js';
 
@@ -11,7 +12,7 @@ export const honoAuth = new Hono<HonoContextEnv>();
 honoAuth.post('/login', async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
-    const { email } = body;
+    const { email, password } = body;
 
     if (!email) {
       return c.json({ error: 'E-mail é obrigatório.' }, 400);
@@ -19,10 +20,54 @@ honoAuth.post('/login', async (c) => {
 
     const cleanEmail = String(email).toLowerCase().trim();
 
-    // 1. Fetch from Supabase PostgreSQL
+    // 1. If password provided and Supabase is configured, verify via Supabase Auth
+    const supabase = getSupabase(c.env);
+    if (supabase && password) {
+      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password: password,
+      });
+
+      if (!authError && authData.user) {
+        let user = await supabaseService.findUserById(authData.user.id);
+        if (!user) {
+          user = await supabaseService.findUserByEmail(cleanEmail);
+        }
+
+        if (user && user.isActive) {
+          let company: Company | null = null;
+          if (user.companyId) {
+            company = await supabaseService.getCompanyById(user.companyId);
+          }
+
+          const lastLoginAt = new Date().toISOString();
+          user.lastLoginAt = lastLoginAt;
+          await supabaseService.updateUser(user.id, { lastLoginAt });
+
+          await supabaseService.createAuditLog({
+            companyId: user.companyId,
+            companyName: company?.name,
+            userId: user.id,
+            userEmail: user.email,
+            action: 'USER_LOGIN',
+            resource: 'Auth',
+            details: `Login Supabase Auth realizado com sucesso para o usuário ${user.name}.`,
+            ipAddress: c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || '127.0.0.1',
+          });
+
+          return c.json({
+            token: authData.session?.access_token || `token_${user.id}`,
+            user,
+            company,
+          });
+        }
+      }
+    }
+
+    // 2. Fetch from Supabase PostgreSQL users table
     let user = await supabaseService.findUserByEmail(cleanEmail);
 
-    // 2. Fallback to store if not found in Supabase
+    // 3. Fallback to demo store if not found in Supabase (for demo quick access)
     if (!user) {
       user = db.users.find(u => u.email.toLowerCase() === cleanEmail) || null;
     }
@@ -53,7 +98,7 @@ honoAuth.post('/login', async (c) => {
       userEmail: user.email,
       action: 'USER_LOGIN',
       resource: 'Auth',
-      details: `Login realizado com sucesso no Supabase para o usuário ${user.name}.`,
+      details: `Login realizado com sucesso para o usuário ${user.name}.`,
       ipAddress: c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || '127.0.0.1',
     });
 
@@ -114,65 +159,162 @@ honoAuth.post('/admin-login', async (c) => {
   }
 });
 
-// 3. Client registration
+// 3. Client registration (REAL SUPABASE CADASTRO)
 honoAuth.post('/register', async (c) => {
+  let createdAuthUserId: string | null = null;
+  let createdCompanyId: string | null = null;
+  const supabase = getSupabase(c.env);
+
   try {
     const body = await c.req.json().catch(() => ({}));
-    const { companyName, tradeName, cnpj, email, phone, adminName, adminEmail, planId } = body;
+    const { companyName, tradeName, cnpj, adminName, adminEmail, phone, password, planId } = body;
 
-    if (!companyName || !cnpj || !adminEmail || !adminName) {
-      return c.json({ error: 'Por favor, preencha todos os campos obrigatórios.' }, 400);
+    // 1. Mandatory Fields Validation
+    if (!companyName || !companyName.trim()) {
+      return c.json({ error: 'A Razão Social da empresa é obrigatória.' }, 400);
+    }
+    if (!cnpj || !cnpj.trim()) {
+      return c.json({ error: 'O CNPJ da empresa é obrigatório.' }, 400);
+    }
+    if (!adminName || !adminName.trim()) {
+      return c.json({ error: 'O nome do gestor responsável é obrigatório.' }, 400);
+    }
+    if (!adminEmail || !adminEmail.trim() || !adminEmail.includes('@')) {
+      return c.json({ error: 'Por favor, informe um e-mail corporativo válido.' }, 400);
+    }
+    if (!password || String(password).length < 6) {
+      return c.json({ error: 'A senha de acesso deve possuir no mínimo 6 caracteres.' }, 400);
     }
 
-    // Check existing user or CNPJ in Supabase
-    const existingUser = await supabaseService.findUserByEmail(adminEmail);
+    const cleanEmail = String(adminEmail).toLowerCase().trim();
+    const cleanCnpj = String(cnpj).trim();
+
+    // 2. Duplicate Check in Supabase
+    const existingUser = await supabaseService.findUserByEmail(cleanEmail);
     if (existingUser) {
-      return c.json({ error: 'Este e-mail já está cadastrado.' }, 409);
+      return c.json({ error: 'Este e-mail já está cadastrado no sistema.' }, 409);
     }
 
-    // Get selected plan
+    const existingCompany = await supabaseService.findCompanyByCnpj(cleanCnpj);
+    if (existingCompany) {
+      return c.json({ error: `O CNPJ ${cleanCnpj} já está cadastrado para a empresa "${existingCompany.name}".` }, 409);
+    }
+
+    // 3. Supabase Auth User Creation (auth.users)
+    let authUserId: string = crypto.randomUUID();
+
+    if (supabase) {
+      try {
+        const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+          email: cleanEmail,
+          password: String(password),
+          email_confirm: true,
+          user_metadata: {
+            name: adminName.trim(),
+            phone: phone?.trim(),
+            role: 'CLIENT_ADMIN',
+          },
+        });
+
+        if (authError) {
+          console.warn('[HonoAuth] Supabase auth.admin.createUser:', authError.message);
+          if (authError.message?.toLowerCase().includes('already') || (authError as any).status === 422) {
+            return c.json({ error: 'Este e-mail já está registrado no serviço de autenticação.' }, 409);
+          }
+
+          // Fallback to signUp if service role admin endpoint is not permitted
+          const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+            email: cleanEmail,
+            password: String(password),
+            options: {
+              data: {
+                name: adminName.trim(),
+                phone: phone?.trim(),
+                role: 'CLIENT_ADMIN',
+              },
+            },
+          });
+
+          if (signUpError) {
+            console.error('[HonoAuth] Supabase auth.signUp error:', signUpError);
+            return c.json({ error: `Falha na autenticação do Supabase: ${signUpError.message}` }, 400);
+          }
+
+          if (signUpData.user?.id) {
+            authUserId = signUpData.user.id;
+            createdAuthUserId = authUserId;
+          }
+        } else if (authData.user?.id) {
+          authUserId = authData.user.id;
+          createdAuthUserId = authUserId;
+        }
+      } catch (authErr: any) {
+        console.error('[HonoAuth] Supabase Auth exception:', authErr);
+        return c.json({ error: `Erro no Supabase Auth: ${authErr.message || authErr}` }, 500);
+      }
+    }
+
+    // 4. Resolve Plan
     const plans = await supabaseService.getAllPlans();
-    const selectedPlanId = planId || 'plan-starter';
-    const plan = (plans.length > 0 ? plans.find(p => p.id === selectedPlanId) : null) || db.plans[0];
+    const selectedPlanId = planId || 'plan-pro';
+    const plan = (plans.length > 0 ? plans.find(p => p.id === selectedPlanId || p.slug === selectedPlanId) : null) || plans[0] || db.plans[0];
 
-    const companyId = `comp_${Date.now()}`;
-    const userId = `usr_${Date.now()}`;
-
-    // Create Company in Supabase
+    // 5. Create Company in public.companies (REAL SUPABASE INSERT)
+    const companyId = crypto.randomUUID();
     const newCompany = await supabaseService.createCompany({
       id: companyId,
-      name: companyName,
-      tradeName: tradeName || companyName,
-      cnpj,
-      email: email || adminEmail,
-      phone: phone || '+55 11 99999-0000',
+      name: companyName.trim(),
+      tradeName: tradeName?.trim() || companyName.trim(),
+      cnpj: cleanCnpj,
+      email: cleanEmail,
+      phone: phone?.trim() || '+55 11 99999-0000',
       status: 'TRIAL',
-      planId: plan.id,
-      monthlyQuota: plan.messageQuota || 50000,
+      planId: plan?.id || null,
+      monthlyQuota: plan?.messageQuota || 50000,
       usedQuota: 0,
-      contactLimit: plan.contactLimit || 100000,
+      contactLimit: plan?.contactLimit || 100000,
       senderVerified: false,
     });
 
-    // Create User in Supabase
+    if (!newCompany) {
+      // Rollback Auth user
+      if (supabase && createdAuthUserId) {
+        try { await supabase.auth.admin.deleteUser(createdAuthUserId); } catch (e) { /* ignore rollback err */ }
+      }
+      return c.json({ error: 'Não foi possível registrar a empresa no banco de dados Supabase. Verifique os dados e tente novamente.' }, 500);
+    }
+
+    createdCompanyId = newCompany.id;
+
+    // 6. Create User in public.users linked to company_id (REAL SUPABASE INSERT)
     const newUser = await supabaseService.createUser({
-      id: userId,
-      companyId: companyId,
-      name: adminName,
-      email: adminEmail,
+      id: authUserId,
+      companyId: newCompany.id,
+      name: adminName.trim(),
+      email: cleanEmail,
       role: 'CLIENT_ADMIN',
-      phone,
+      phone: phone?.trim() || null,
       isActive: true,
     });
 
-    // Create Subscription in Supabase
+    if (!newUser) {
+      // Atomic Rollback: delete company and delete auth user
+      await supabaseService.deleteCompany(newCompany.id);
+      if (supabase && createdAuthUserId) {
+        try { await supabase.auth.admin.deleteUser(createdAuthUserId); } catch (e) { /* ignore rollback err */ }
+      }
+      return c.json({ error: 'Não foi possível vincular o usuário gestor à empresa no Supabase.' }, 500);
+    }
+
+    // 7. Create Subscription Trial in public.subscriptions
     const now = new Date();
     const endDate = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000); // 14 days trial
     await supabaseService.createSubscription({
-      companyId,
+      id: crypto.randomUUID(),
+      companyId: newCompany.id,
       planId: plan.id,
       status: 'TRIAL',
-      amount: plan.price,
+      amount: plan.price || 0,
       interval: 'MONTHLY',
       currentPeriodStart: now.toISOString(),
       currentPeriodEnd: endDate.toISOString(),
@@ -180,8 +322,9 @@ honoAuth.post('/register', async (c) => {
       paymentMethod: 'PIX',
     });
 
-    // Create default onboarding template
-    await supabaseService.createTemplate(companyId, {
+    // 8. Create Default Onboarding Template
+    await supabaseService.createTemplate(newCompany.id, {
+      id: crypto.randomUUID(),
       name: 'Boas-Vindas Padrão Syntech',
       category: 'UTILITY',
       content: 'Olá *{nome}*! Bem-vindo à {empresa}. Estamos à disposição para atendê-lo na unidade {loja} ({cidade}).',
@@ -189,21 +332,38 @@ honoAuth.post('/register', async (c) => {
       status: 'APPROVED',
     });
 
-    // Also update in-memory store for instant zero-latency caching
-    if (newCompany && newUser) {
-      db.companies.push(newCompany);
-      db.users.push(newUser);
+    // 9. Audit Log
+    await supabaseService.createAuditLog({
+      id: crypto.randomUUID(),
+      companyId: newCompany.id,
+      companyName: newCompany.name,
+      userId: newUser.id,
+      userEmail: newUser.email,
+      action: 'COMPANY_REGISTERED',
+      resource: 'Auth',
+      details: `Conta corporativa criada com sucesso para ${newCompany.name} (CNPJ: ${newCompany.cnpj}). Usuário gestor: ${newUser.name}.`,
+      ipAddress: c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || '127.0.0.1',
+    });
+
+    // 10. Return REAL Data
+    return c.json({
+      message: 'Conta corporativa criada com sucesso!',
+      token: `token_${newUser.id}`,
+      user: newUser,
+      company: newCompany,
+    }, 201);
+  } catch (error: any) {
+    console.error('[HonoAuth] Register error:', error);
+
+    // Rollback if partially created
+    if (createdCompanyId) {
+      try { await supabaseService.deleteCompany(createdCompanyId); } catch (e) { /* ignore rollback err */ }
+    }
+    if (supabase && createdAuthUserId) {
+      try { await supabase.auth.admin.deleteUser(createdAuthUserId); } catch (e) { /* ignore rollback err */ }
     }
 
-    return c.json({
-      message: 'Conta empresarial criada com sucesso!',
-      token: `token_${newUser?.id || userId}`,
-      user: newUser || { id: userId, companyId, name: adminName, email: adminEmail, role: 'CLIENT_ADMIN', isActive: true, createdAt: now.toISOString(), updatedAt: now.toISOString() },
-      company: newCompany || { id: companyId, name: companyName, tradeName: tradeName || companyName, cnpj, email: adminEmail, phone: phone || '', status: 'TRIAL', planId: plan.id, monthlyQuota: 50000, usedQuota: 0, contactLimit: 100000, contactCount: 0, senderVerified: false, createdAt: now.toISOString(), updatedAt: now.toISOString() },
-    }, 201);
-  } catch (error) {
-    console.error('[HonoAuth] Register error:', error);
-    return c.json({ error: 'Erro ao cadastrar empresa.' }, 500);
+    return c.json({ error: error?.message || 'Erro interno ao processar cadastro de empresa no Supabase.' }, 500);
   }
 });
 

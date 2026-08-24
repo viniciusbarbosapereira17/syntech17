@@ -40,21 +40,13 @@ export async function honoAuthMiddleware(c: Context<HonoContextEnv>, next: Next)
     user = await supabaseService.findUserById(targetUserId);
   }
 
-  // 2. Fallback to store if not in Supabase or Supabase is offline
+  // 2. Fallback to store only if user was specifically requested by ID and exists in store (e.g. quick demo button)
   if (!user && targetUserId) {
     user = db.users.find(u => u.id === targetUserId && u.isActive) || null;
   }
 
-  // 3. Fallback default user for immediate trial exploration if unauthenticated
-  if (!user) {
-    user = await supabaseService.findUserById('usr-farmavida-roberto');
-    if (!user) {
-      user = db.users.find(u => u.id === 'usr-farmavida-roberto') || null;
-    }
-  }
-
   if (!user || !user.isActive) {
-    return c.json({ error: 'Não autorizado. Usuário não encontrado ou inativo.' }, 401);
+    return c.json({ error: 'Não autorizado. Sessão inválida ou expirada.' }, 401);
   }
 
   c.set('user', user);

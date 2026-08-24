@@ -113,35 +113,58 @@ authRouter.post('/admin-login', async (req: Request, res: Response) => {
 
 // Client registration (new company & admin user)
 authRouter.post('/register', async (req: Request, res: Response) => {
-  try {
-    const { companyName, tradeName, cnpj, email, phone, adminName, adminEmail, planId } = req.body;
+  let createdAuthUserId: string | null = null;
+  let createdCompanyId: string | null = null;
 
-    if (!companyName || !cnpj || !adminEmail || !adminName) {
-      return res.status(400).json({ error: 'Por favor, preencha todos os campos obrigatórios.' });
+  try {
+    const { companyName, tradeName, cnpj, adminName, adminEmail, phone, password, planId } = req.body;
+
+    if (!companyName || !companyName.trim()) {
+      return res.status(400).json({ error: 'A Razão Social da empresa é obrigatória.' });
+    }
+    if (!cnpj || !cnpj.trim()) {
+      return res.status(400).json({ error: 'O CNPJ da empresa é obrigatório.' });
+    }
+    if (!adminName || !adminName.trim()) {
+      return res.status(400).json({ error: 'O nome do gestor responsável é obrigatório.' });
+    }
+    if (!adminEmail || !adminEmail.trim() || !adminEmail.includes('@')) {
+      return res.status(400).json({ error: 'Por favor, informe um e-mail corporativo válido.' });
+    }
+    if (!password || String(password).length < 6) {
+      return res.status(400).json({ error: 'A senha de acesso deve possuir no mínimo 6 caracteres.' });
     }
 
+    const cleanEmail = String(adminEmail).toLowerCase().trim();
+    const cleanCnpj = String(cnpj).trim();
+
     // Check existing user or CNPJ in Supabase
-    const existingUser = await supabaseService.findUserByEmail(adminEmail);
+    const existingUser = await supabaseService.findUserByEmail(cleanEmail);
     if (existingUser) {
-      return res.status(409).json({ error: 'Este e-mail já está cadastrado.' });
+      return res.status(409).json({ error: 'Este e-mail já está cadastrado no sistema.' });
+    }
+
+    const existingCompany = await supabaseService.findCompanyByCnpj(cleanCnpj);
+    if (existingCompany) {
+      return res.status(409).json({ error: `O CNPJ ${cleanCnpj} já está cadastrado para a empresa "${existingCompany.name}".` });
     }
 
     // Get selected plan
     const plans = await supabaseService.getAllPlans();
-    const selectedPlanId = planId || 'plan-starter';
-    const plan = (plans.length > 0 ? plans.find(p => p.id === selectedPlanId) : null) || db.plans[0];
+    const selectedPlanId = planId || 'plan-pro';
+    const plan = (plans.length > 0 ? plans.find(p => p.id === selectedPlanId || p.slug === selectedPlanId) : null) || plans[0] || db.plans[0];
 
-    const companyId = `comp_${Date.now()}`;
-    const userId = `usr_${Date.now()}`;
+    const companyId = crypto.randomUUID();
+    const authUserId = crypto.randomUUID();
 
     // Create Company in Supabase
     const newCompany = await supabaseService.createCompany({
       id: companyId,
-      name: companyName,
-      tradeName: tradeName || companyName,
-      cnpj,
-      email: email || adminEmail,
-      phone: phone || '+55 11 99999-0000',
+      name: companyName.trim(),
+      tradeName: tradeName?.trim() || companyName.trim(),
+      cnpj: cleanCnpj,
+      email: cleanEmail,
+      phone: phone?.trim() || '+55 11 99999-0000',
       status: 'TRIAL',
       planId: plan.id,
       monthlyQuota: plan.messageQuota || 50000,
@@ -150,25 +173,37 @@ authRouter.post('/register', async (req: Request, res: Response) => {
       senderVerified: false,
     });
 
+    if (!newCompany) {
+      return res.status(500).json({ error: 'Falha ao gravar registro da empresa no Supabase.' });
+    }
+
+    createdCompanyId = newCompany.id;
+
     // Create User in Supabase
     const newUser = await supabaseService.createUser({
-      id: userId,
-      companyId: companyId,
-      name: adminName,
-      email: adminEmail,
+      id: authUserId,
+      companyId: newCompany.id,
+      name: adminName.trim(),
+      email: cleanEmail,
       role: 'CLIENT_ADMIN',
-      phone,
+      phone: phone?.trim() || null,
       isActive: true,
     });
+
+    if (!newUser) {
+      await supabaseService.deleteCompany(newCompany.id);
+      return res.status(500).json({ error: 'Falha ao vincular usuário gestor à empresa no Supabase.' });
+    }
 
     // Create Subscription in Supabase
     const now = new Date();
     const endDate = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000); // 14 days trial
     await supabaseService.createSubscription({
-      companyId,
+      id: crypto.randomUUID(),
+      companyId: newCompany.id,
       planId: plan.id,
       status: 'TRIAL',
-      amount: plan.price,
+      amount: plan.price || 0,
       interval: 'MONTHLY',
       currentPeriodStart: now.toISOString(),
       currentPeriodEnd: endDate.toISOString(),
@@ -177,7 +212,8 @@ authRouter.post('/register', async (req: Request, res: Response) => {
     });
 
     // Create default onboarding template
-    await supabaseService.createTemplate(companyId, {
+    await supabaseService.createTemplate(newCompany.id, {
+      id: crypto.randomUUID(),
       name: 'Boas-Vindas Padrão Syntech',
       category: 'UTILITY',
       content: 'Olá *{nome}*! Bem-vindo à {empresa}. Estamos à disposição para atendê-lo na unidade {loja} ({cidade}).',
@@ -185,21 +221,31 @@ authRouter.post('/register', async (req: Request, res: Response) => {
       status: 'APPROVED',
     });
 
-    // Also update in-memory store for instant zero-latency caching
-    if (newCompany && newUser) {
-      db.companies.push(newCompany);
-      db.users.push(newUser);
-    }
+    // Audit log in Supabase
+    await supabaseService.createAuditLog({
+      id: crypto.randomUUID(),
+      companyId: newCompany.id,
+      companyName: newCompany.name,
+      userId: newUser.id,
+      userEmail: newUser.email,
+      action: 'COMPANY_REGISTERED',
+      resource: 'Auth',
+      details: `Conta corporativa criada com sucesso para ${newCompany.name} (CNPJ: ${newCompany.cnpj}). Usuário gestor: ${newUser.name}.`,
+      ipAddress: req.ip || '127.0.0.1',
+    });
 
     return res.status(201).json({
-      message: 'Conta empresarial criada com sucesso!',
-      token: `token_${newUser?.id || userId}`,
-      user: newUser || { id: userId, companyId, name: adminName, email: adminEmail, role: 'CLIENT_ADMIN', isActive: true, createdAt: now.toISOString(), updatedAt: now.toISOString() },
-      company: newCompany || { id: companyId, name: companyName, tradeName: tradeName || companyName, cnpj, email: adminEmail, phone: phone || '', status: 'TRIAL', planId: plan.id, monthlyQuota: 50000, usedQuota: 0, contactLimit: 100000, contactCount: 0, senderVerified: false, createdAt: now.toISOString(), updatedAt: now.toISOString() },
+      message: 'Conta corporativa criada com sucesso!',
+      token: `token_${newUser.id}`,
+      user: newUser,
+      company: newCompany,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('[AuthRoutes] Register error:', error);
-    return res.status(500).json({ error: 'Erro ao cadastrar empresa.' });
+    if (createdCompanyId) {
+      try { await supabaseService.deleteCompany(createdCompanyId); } catch (e) { /* ignore */ }
+    }
+    return res.status(500).json({ error: error?.message || 'Erro ao cadastrar empresa.' });
   }
 });
 

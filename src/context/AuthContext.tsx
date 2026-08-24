@@ -83,32 +83,55 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
   const refreshAuth = async () => {
+    const token = localStorage.getItem('syntech_token');
+    const userId = localStorage.getItem('syntech_user_id');
+
+    if (!token && !userId) {
+      setUser(null);
+      setCompany(null);
+      setSubscription(null);
+      setPlan(null);
+      setIsLoading(false);
+      return;
+    }
+
     try {
       setIsLoading(true);
       const data = await api.getMe();
-      setUser(data.user);
-      setCompany(data.company || null);
-      setSubscription(data.subscription || null);
-      setPlan(data.plan || null);
-      if (data.availableTenants) {
-        setAvailableTenants(data.availableTenants);
+      if (data && data.user) {
+        setUser(data.user);
+        setCompany(data.company || null);
+        setSubscription(data.subscription || null);
+        setPlan(data.plan || null);
+        if (data.availableTenants) {
+          setAvailableTenants(data.availableTenants);
+        }
+      } else {
+        throw new Error('Sessão inválida');
       }
     } catch (err) {
-      console.error('Falha ao autenticar sessão:', err);
+      console.warn('Sessão expirada ou não autenticada:', err);
+      localStorage.removeItem('syntech_token');
+      localStorage.removeItem('syntech_user_id');
+      localStorage.removeItem('syntech_company_id');
+      setUser(null);
+      setCompany(null);
+      setSubscription(null);
+      setPlan(null);
     } finally {
       setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    // Check initial user ID in local storage or fallback to demo
+    // Only refresh session if tokens exist; do not auto-login to demo
+    const storedToken = localStorage.getItem('syntech_token');
     const storedUserId = localStorage.getItem('syntech_user_id');
-    if (!storedUserId) {
-      localStorage.setItem('syntech_user_id', 'usr-farmavida-roberto');
-      localStorage.setItem('syntech_token', 'token_usr-farmavida-roberto');
-      localStorage.setItem('syntech_company_id', 'comp-farmavida');
+    if (storedToken || storedUserId) {
+      refreshAuth();
+    } else {
+      setIsLoading(false);
     }
-    refreshAuth();
   }, []);
 
   const login = async (email: string, password?: string) => {

@@ -23,17 +23,31 @@ export const AuthLayout: React.FC<AuthLayoutProps> = (props) => {
   const [password, setPassword] = useState('syntech@2026');
 
   // Register form state
-  const [companyName, setCompanyName] = useState('Drogaria Nova Vida Ltda');
-  const [tradeName, setTradeName] = useState('Rede Nova Vida');
-  const [cnpj, setCnpj] = useState('29.401.882/0001-44');
-  const [adminName, setAdminName] = useState('Dra. Camila Ribeiro');
-  const [adminEmail, setAdminEmail] = useState('camila@novavida.com.br');
-  const [phone, setPhone] = useState('+55 11 98777-6655');
+  const [companyName, setCompanyName] = useState('');
+  const [tradeName, setTradeName] = useState('');
+  const [cnpj, setCnpj] = useState('');
+  const [adminName, setAdminName] = useState('');
+  const [adminEmail, setAdminEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [registerPassword, setRegisterPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
 
   const [isLoading, setIsLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (mode === 'cadastro') {
+      if (!registerPassword || registerPassword.length < 6) {
+        showToast('A senha de acesso deve possuir pelo menos 6 caracteres.', 'error', 'Validação');
+        return;
+      }
+      if (registerPassword !== confirmPassword) {
+        showToast('A confirmação de senha não confere com a senha digitada.', 'error', 'Validação');
+        return;
+      }
+    }
+
     setIsLoading(true);
 
     try {
@@ -53,13 +67,14 @@ export const AuthLayout: React.FC<AuthLayoutProps> = (props) => {
           adminName,
           adminEmail,
           phone,
+          password: registerPassword,
           planId: 'plan-pro',
         });
         showToast('Conta corporativa criada com sucesso!', 'success', 'Bem-vindo à Syntech DC');
         navigate('/dashboard');
       }
     } catch (err: any) {
-      showToast(err.message || 'Falha ao autenticar credenciais.', 'error', 'Erro');
+      showToast(err.message || 'Falha na operação de autenticação.', 'error', 'Erro');
     } finally {
       setIsLoading(false);
     }
@@ -257,6 +272,27 @@ export const AuthLayout: React.FC<AuthLayoutProps> = (props) => {
                       placeholder="gestor@empresa.com.br"
                       value={adminEmail}
                       onChange={e => setAdminEmail(e.target.value)}
+                      required
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <Input
+                      label="Senha de Acesso"
+                      type="password"
+                      placeholder="Mínimo 6 caracteres"
+                      value={registerPassword}
+                      onChange={e => setRegisterPassword(e.target.value)}
+                      leftIcon={<Lock className="w-4 h-4" />}
+                      required
+                    />
+                    <Input
+                      label="Confirmar Senha"
+                      type="password"
+                      placeholder="Repita sua senha"
+                      value={confirmPassword}
+                      onChange={e => setConfirmPassword(e.target.value)}
+                      leftIcon={<Lock className="w-4 h-4" />}
                       required
                     />
                   </div>
