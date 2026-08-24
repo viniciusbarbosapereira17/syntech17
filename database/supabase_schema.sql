@@ -25,14 +25,13 @@ CREATE TABLE IF NOT EXISTS companies (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 
--- 2. USERS
-CREATE TABLE IF NOT EXISTS users (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+-- 2. PROFILES (Integrated with Supabase auth.users)
+CREATE TABLE IF NOT EXISTS profiles (
+    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     company_id UUID REFERENCES companies(id) ON DELETE CASCADE,
-    name VARCHAR(255) NOT NULL,
+    full_name VARCHAR(255) NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
-    role VARCHAR(50) NOT NULL CHECK (role IN ('ADMIN', 'MANAGER', 'SUPPORT', 'OPERATOR', 'CLIENT_ADMIN', 'CLIENT_MEMBER')),
+    role VARCHAR(50) NOT NULL DEFAULT 'CLIENT_ADMIN' CHECK (role IN ('ADMIN', 'MANAGER', 'SUPPORT', 'OPERATOR', 'CLIENT_ADMIN', 'CLIENT_MEMBER')),
     phone VARCHAR(30),
     avatar_url TEXT,
     is_active BOOLEAN DEFAULT TRUE,
@@ -208,13 +207,13 @@ CREATE TABLE IF NOT EXISTS campaign_events (
 CREATE TABLE IF NOT EXISTS support_tickets (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    user_id UUID REFERENCES profiles(id) ON DELETE SET NULL,
     ticket_number VARCHAR(50) UNIQUE NOT NULL,
     subject VARCHAR(255) NOT NULL,
     department VARCHAR(50) NOT NULL CHECK (department IN ('COMERCIAL', 'SUPORTE_TECNICO', 'FINANCEIRO', 'INTEGRACOES')),
     priority VARCHAR(50) DEFAULT 'MEDIUM' CHECK (priority IN ('LOW', 'MEDIUM', 'HIGH', 'URGENT')),
     status VARCHAR(50) DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'IN_PROGRESS', 'WAITING_CLIENT', 'RESOLVED', 'CLOSED')),
-    assigned_to UUID REFERENCES users(id) ON DELETE SET NULL,
+    assigned_to UUID REFERENCES profiles(id) ON DELETE SET NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
     closed_at TIMESTAMP WITH TIME ZONE
@@ -224,7 +223,7 @@ CREATE TABLE IF NOT EXISTS support_tickets (
 CREATE TABLE IF NOT EXISTS support_messages (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     ticket_id UUID NOT NULL REFERENCES support_tickets(id) ON DELETE CASCADE,
-    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    user_id UUID REFERENCES profiles(id) ON DELETE SET NULL,
     sender_type VARCHAR(50) NOT NULL CHECK (sender_type IN ('CLIENT', 'SUPPORT_AGENT')),
     message TEXT NOT NULL,
     attachments JSONB DEFAULT '[]'::jsonb,
@@ -246,7 +245,7 @@ CREATE TABLE IF NOT EXISTS blacklist (
 CREATE TABLE IF NOT EXISTS audit_logs (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     company_id UUID REFERENCES companies(id) ON DELETE SET NULL,
-    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    user_id UUID REFERENCES profiles(id) ON DELETE SET NULL,
     user_email VARCHAR(255) NOT NULL,
     action VARCHAR(100) NOT NULL,
     resource VARCHAR(100) NOT NULL,
@@ -275,7 +274,7 @@ CREATE TABLE IF NOT EXISTS integrations (
 -- =============================================================================
 -- INDEXES FOR MAXIMUM QUERY PERFORMANCE IN MULTI-TENANT ISOLATION
 -- =============================================================================
-CREATE INDEX IF NOT EXISTS idx_users_company_id ON users(company_id);
+CREATE INDEX IF NOT EXISTS idx_profiles_company_id ON profiles(company_id);
 CREATE INDEX IF NOT EXISTS idx_contacts_company_id ON contacts(company_id);
 CREATE INDEX IF NOT EXISTS idx_contacts_phone ON contacts(phone);
 CREATE INDEX IF NOT EXISTS idx_contact_lists_company_id ON contact_lists(company_id);

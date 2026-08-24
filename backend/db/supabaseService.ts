@@ -47,7 +47,7 @@ function mapUser(row: any): User {
   return {
     id: row.id,
     companyId: row.company_id || row.companyId,
-    name: row.name,
+    name: row.full_name || row.name || 'Usuário',
     email: row.email,
     role: row.role,
     phone: row.phone,
@@ -449,17 +449,17 @@ export class SupabaseDatabaseService {
   }
 
   // ---------------------------------------------------------------------------
-  // 2. USERS / PROFILES
+  // 2. PROFILES (auth.users.id -> public.profiles.id -> companies.id)
   // ---------------------------------------------------------------------------
   async findUserByEmail(email: string): Promise<User | null> {
     const supabase = getSupabase();
     if (!supabase) return null;
 
     const { data, error } = await supabase
-      .from('users')
+      .from('profiles')
       .select('*')
       .eq('email', email.toLowerCase().trim())
-      .single();
+      .maybeSingle();
 
     if (error || !data) return null;
     return mapUser(data);
@@ -470,10 +470,10 @@ export class SupabaseDatabaseService {
     if (!supabase) return null;
 
     const { data, error } = await supabase
-      .from('users')
+      .from('profiles')
       .select('*')
       .eq('id', id)
-      .single();
+      .maybeSingle();
 
     if (error || !data) return null;
     return mapUser(data);
@@ -483,7 +483,7 @@ export class SupabaseDatabaseService {
     const supabase = getSupabase();
     if (!supabase) return [];
 
-    let query = supabase.from('users').select('*').order('created_at', { ascending: false });
+    let query = supabase.from('profiles').select('*').order('created_at', { ascending: false });
 
     if (companyId) {
       query = query.eq('company_id', companyId);
@@ -492,7 +492,7 @@ export class SupabaseDatabaseService {
       query = query.eq('role', role);
     }
     if (search) {
-      query = query.or(`name.ilike.%${search}%,email.ilike.%${search}%`);
+      query = query.or(`full_name.ilike.%${search}%,email.ilike.%${search}%`);
     }
 
     const { data, error } = await query;
@@ -500,17 +500,17 @@ export class SupabaseDatabaseService {
     return data.map(mapUser);
   }
 
-  async createUser(payload: Partial<User>): Promise<User | null> {
+  async createProfile(payload: Partial<User>): Promise<User | null> {
     const supabase = getSupabase();
     if (!supabase) return null;
 
     const id = payload.id || crypto.randomUUID();
+
     const record = {
       id,
       company_id: payload.companyId,
-      name: payload.name,
+      full_name: payload.name || (payload as any).fullName || (payload as any).full_name || 'Usuário',
       email: payload.email?.toLowerCase().trim(),
-      password_hash: (payload as any).password_hash || (payload as any).passwordHash || 'syntech_auth_bcrypt_hash',
       role: payload.role || 'CLIENT_ADMIN',
       phone: payload.phone || null,
       avatar_url: payload.avatarUrl || null,
@@ -520,35 +520,43 @@ export class SupabaseDatabaseService {
     };
 
     const { data, error } = await supabase
-      .from('users')
+      .from('profiles')
       .insert(record)
       .select()
       .single();
 
     if (error || !data) {
-      console.error('[Supabase] Error creating user:', error?.message || error, error?.details || '');
+      console.error('[Supabase] Error creating profile in public.profiles:', error?.message || error, error?.details || '');
       return null;
     }
     return mapUser(data);
   }
 
-  async deleteUser(id: string): Promise<boolean> {
+  async createUser(payload: Partial<User>): Promise<User | null> {
+    return this.createProfile(payload);
+  }
+
+  async deleteProfile(id: string): Promise<boolean> {
     const supabase = getSupabase();
     if (!supabase) return false;
 
     const { error } = await supabase
-      .from('users')
+      .from('profiles')
       .delete()
       .eq('id', id);
 
     if (error) {
-      console.error('[Supabase] Error deleting user:', error);
+      console.error('[Supabase] Error deleting profile:', error);
       return false;
     }
     return true;
   }
 
-  async updateUser(id: string, updates: Partial<User>): Promise<User | null> {
+  async deleteUser(id: string): Promise<boolean> {
+    return this.deleteProfile(id);
+  }
+
+  async updateProfile(id: string, updates: Partial<User>): Promise<User | null> {
     const supabase = getSupabase();
     if (!supabase) return null;
 
@@ -556,7 +564,7 @@ export class SupabaseDatabaseService {
       updated_at: new Date().toISOString(),
     };
 
-    if (updates.name !== undefined) dbPayload.name = updates.name;
+    if (updates.name !== undefined) dbPayload.full_name = updates.name;
     if (updates.role !== undefined) dbPayload.role = updates.role;
     if (updates.phone !== undefined) dbPayload.phone = updates.phone;
     if (updates.avatarUrl !== undefined) dbPayload.avatar_url = updates.avatarUrl;
@@ -564,17 +572,21 @@ export class SupabaseDatabaseService {
     if (updates.lastLoginAt !== undefined) dbPayload.last_login_at = updates.lastLoginAt;
 
     const { data, error } = await supabase
-      .from('users')
+      .from('profiles')
       .update(dbPayload)
       .eq('id', id)
       .select()
       .single();
 
     if (error || !data) {
-      console.error('[Supabase] Error updating user:', error);
+      console.error('[Supabase] Error updating profile:', error);
       return null;
     }
     return mapUser(data);
+  }
+
+  async updateUser(id: string, updates: Partial<User>): Promise<User | null> {
+    return this.updateProfile(id, updates);
   }
 
   // ---------------------------------------------------------------------------
@@ -748,6 +760,22 @@ export class SupabaseDatabaseService {
 
     if (error || !data) return null;
     return mapSubscription(data);
+  }
+
+  async deleteSubscription(id: string): Promise<boolean> {
+    const supabase = getSupabase();
+    if (!supabase) return false;
+
+    const { error } = await supabase
+      .from('subscriptions')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      console.error('[Supabase] Error deleting subscription:', error);
+      return false;
+    }
+    return true;
   }
 
   // ---------------------------------------------------------------------------

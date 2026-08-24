@@ -286,8 +286,8 @@ honoAuth.post('/register', async (c) => {
 
     createdCompanyId = newCompany.id;
 
-    // 6. Create User in public.users linked to company_id (REAL SUPABASE INSERT)
-    const newUser = await supabaseService.createUser({
+    // 6. Create Profile in public.profiles linked to auth.users.id & company_id (REAL SUPABASE INSERT)
+    const newProfile = await supabaseService.createProfile({
       id: authUserId,
       companyId: newCompany.id,
       name: adminName.trim(),
@@ -297,20 +297,21 @@ honoAuth.post('/register', async (c) => {
       isActive: true,
     });
 
-    if (!newUser) {
+    if (!newProfile) {
       // Atomic Rollback: delete company and delete auth user
       await supabaseService.deleteCompany(newCompany.id);
       if (supabase && createdAuthUserId) {
         try { await supabase.auth.admin.deleteUser(createdAuthUserId); } catch (e) { /* ignore rollback err */ }
       }
-      return c.json({ error: 'Não foi possível vincular o usuário gestor à empresa no Supabase.' }, 500);
+      return c.json({ error: 'Não foi possível criar o perfil do usuário gestor em public.profiles no Supabase.' }, 500);
     }
 
     // 7. Create Subscription Trial in public.subscriptions
     const now = new Date();
     const endDate = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000); // 14 days trial
-    await supabaseService.createSubscription({
-      id: crypto.randomUUID(),
+    const subscriptionId = crypto.randomUUID();
+    const newSubscription = await supabaseService.createSubscription({
+      id: subscriptionId,
       companyId: newCompany.id,
       planId: plan.id,
       status: 'TRIAL',
@@ -322,9 +323,20 @@ honoAuth.post('/register', async (c) => {
       paymentMethod: 'PIX',
     });
 
-    // 8. Create Default Onboarding Template
-    await supabaseService.createTemplate(newCompany.id, {
-      id: crypto.randomUUID(),
+    if (!newSubscription) {
+      // Complete atomic rollback
+      await supabaseService.deleteProfile(newProfile.id);
+      await supabaseService.deleteCompany(newCompany.id);
+      if (supabase && createdAuthUserId) {
+        try { await supabase.auth.admin.deleteUser(createdAuthUserId); } catch (e) { /* ignore rollback err */ }
+      }
+      return c.json({ error: 'Não foi possível registrar a assinatura de teste no Supabase.' }, 500);
+    }
+
+    // 8. Create Default Onboarding Template in public.templates
+    const templateId = crypto.randomUUID();
+    const newTemplate = await supabaseService.createTemplate(newCompany.id, {
+      id: templateId,
       name: 'Boas-Vindas Padrão Syntech',
       category: 'UTILITY',
       content: 'Olá *{nome}*! Bem-vindo à {empresa}. Estamos à disposição para atendê-lo na unidade {loja} ({cidade}).',
@@ -332,24 +344,35 @@ honoAuth.post('/register', async (c) => {
       status: 'APPROVED',
     });
 
-    // 9. Audit Log
+    if (!newTemplate) {
+      // Complete atomic rollback
+      await supabaseService.deleteSubscription(subscriptionId);
+      await supabaseService.deleteProfile(newProfile.id);
+      await supabaseService.deleteCompany(newCompany.id);
+      if (supabase && createdAuthUserId) {
+        try { await supabase.auth.admin.deleteUser(createdAuthUserId); } catch (e) { /* ignore rollback err */ }
+      }
+      return c.json({ error: 'Não foi possível provisionar o modelo de mensagem inicial no Supabase.' }, 500);
+    }
+
+    // 9. Audit Log in public.audit_logs (user_id = profiles.id)
     await supabaseService.createAuditLog({
       id: crypto.randomUUID(),
       companyId: newCompany.id,
       companyName: newCompany.name,
-      userId: newUser.id,
-      userEmail: newUser.email,
+      userId: newProfile.id,
+      userEmail: newProfile.email,
       action: 'COMPANY_REGISTERED',
       resource: 'Auth',
-      details: `Conta corporativa criada com sucesso para ${newCompany.name} (CNPJ: ${newCompany.cnpj}). Usuário gestor: ${newUser.name}.`,
+      details: `Conta corporativa criada com sucesso para ${newCompany.name} (CNPJ: ${newCompany.cnpj}). Gestor: ${newProfile.name}.`,
       ipAddress: c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || '127.0.0.1',
     });
 
     // 10. Return REAL Data
     return c.json({
       message: 'Conta corporativa criada com sucesso!',
-      token: `token_${newUser.id}`,
-      user: newUser,
+      token: `token_${newProfile.id}`,
+      user: newProfile,
       company: newCompany,
     }, 201);
   } catch (error: any) {

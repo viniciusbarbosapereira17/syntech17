@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { supabaseService } from '../db/supabaseService.js';
 import { db } from '../db/store.js';
+import { getSupabase } from '../db/supabaseClient.js';
 import { AuthenticatedRequest, authMiddleware } from '../middleware/auth.js';
 import { Company, User } from '../../shared/types.js';
 
@@ -149,15 +150,68 @@ authRouter.post('/register', async (req: Request, res: Response) => {
       return res.status(409).json({ error: `O CNPJ ${cleanCnpj} já está cadastrado para a empresa "${existingCompany.name}".` });
     }
 
-    // Get selected plan
+    // 3. Supabase Auth User Creation (auth.users)
+    const supabase = getSupabase();
+    let authUserId: string = crypto.randomUUID();
+
+    if (supabase) {
+      try {
+        const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+          email: cleanEmail,
+          password: String(password),
+          email_confirm: true,
+          user_metadata: {
+            name: adminName.trim(),
+            phone: phone?.trim(),
+            role: 'CLIENT_ADMIN',
+          },
+        });
+
+        if (authError) {
+          console.warn('[AuthRoutes] Supabase auth.admin.createUser:', authError.message);
+          if (authError.message?.toLowerCase().includes('already') || (authError as any).status === 422) {
+            return res.status(409).json({ error: 'Este e-mail já está registrado no serviço de autenticação.' });
+          }
+
+          const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+            email: cleanEmail,
+            password: String(password),
+            options: {
+              data: {
+                name: adminName.trim(),
+                phone: phone?.trim(),
+                role: 'CLIENT_ADMIN',
+              },
+            },
+          });
+
+          if (signUpError) {
+            console.error('[AuthRoutes] Supabase auth.signUp error:', signUpError);
+            return res.status(400).json({ error: `Falha na autenticação do Supabase: ${signUpError.message}` });
+          }
+
+          if (signUpData.user?.id) {
+            authUserId = signUpData.user.id;
+            createdAuthUserId = authUserId;
+          }
+        } else if (authData.user?.id) {
+          authUserId = authData.user.id;
+          createdAuthUserId = authUserId;
+        }
+      } catch (authErr: any) {
+        console.error('[AuthRoutes] Supabase Auth exception:', authErr);
+        return res.status(500).json({ error: `Erro no Supabase Auth: ${authErr.message || authErr}` });
+      }
+    }
+
+    // 4. Resolve Plan
     const plans = await supabaseService.getAllPlans();
     const selectedPlanId = planId || 'plan-pro';
     const plan = (plans.length > 0 ? plans.find(p => p.id === selectedPlanId || p.slug === selectedPlanId) : null) || plans[0] || db.plans[0];
 
     const companyId = crypto.randomUUID();
-    const authUserId = crypto.randomUUID();
 
-    // Create Company in Supabase
+    // 5. Create Company in public.companies
     const newCompany = await supabaseService.createCompany({
       id: companyId,
       name: companyName.trim(),
@@ -174,13 +228,16 @@ authRouter.post('/register', async (req: Request, res: Response) => {
     });
 
     if (!newCompany) {
+      if (supabase && createdAuthUserId) {
+        try { await supabase.auth.admin.deleteUser(createdAuthUserId); } catch (e) { /* ignore */ }
+      }
       return res.status(500).json({ error: 'Falha ao gravar registro da empresa no Supabase.' });
     }
 
     createdCompanyId = newCompany.id;
 
-    // Create User in Supabase
-    const newUser = await supabaseService.createUser({
+    // 6. Create Profile in public.profiles (auth.users.id -> profiles.id -> companies.id)
+    const newProfile = await supabaseService.createProfile({
       id: authUserId,
       companyId: newCompany.id,
       name: adminName.trim(),
@@ -190,16 +247,20 @@ authRouter.post('/register', async (req: Request, res: Response) => {
       isActive: true,
     });
 
-    if (!newUser) {
+    if (!newProfile) {
       await supabaseService.deleteCompany(newCompany.id);
-      return res.status(500).json({ error: 'Falha ao vincular usuário gestor à empresa no Supabase.' });
+      if (supabase && createdAuthUserId) {
+        try { await supabase.auth.admin.deleteUser(createdAuthUserId); } catch (e) { /* ignore */ }
+      }
+      return res.status(500).json({ error: 'Falha ao criar o perfil do usuário gestor em public.profiles no Supabase.' });
     }
 
-    // Create Subscription in Supabase
+    // 7. Create Subscription Trial in public.subscriptions
     const now = new Date();
     const endDate = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000); // 14 days trial
-    await supabaseService.createSubscription({
-      id: crypto.randomUUID(),
+    const subscriptionId = crypto.randomUUID();
+    const newSubscription = await supabaseService.createSubscription({
+      id: subscriptionId,
       companyId: newCompany.id,
       planId: plan.id,
       status: 'TRIAL',
@@ -211,9 +272,19 @@ authRouter.post('/register', async (req: Request, res: Response) => {
       paymentMethod: 'PIX',
     });
 
-    // Create default onboarding template
-    await supabaseService.createTemplate(newCompany.id, {
-      id: crypto.randomUUID(),
+    if (!newSubscription) {
+      await supabaseService.deleteProfile(newProfile.id);
+      await supabaseService.deleteCompany(newCompany.id);
+      if (supabase && createdAuthUserId) {
+        try { await supabase.auth.admin.deleteUser(createdAuthUserId); } catch (e) { /* ignore */ }
+      }
+      return res.status(500).json({ error: 'Falha ao registrar assinatura de teste no Supabase.' });
+    }
+
+    // 8. Create Default Onboarding Template in public.templates
+    const templateId = crypto.randomUUID();
+    const newTemplate = await supabaseService.createTemplate(newCompany.id, {
+      id: templateId,
       name: 'Boas-Vindas Padrão Syntech',
       category: 'UTILITY',
       content: 'Olá *{nome}*! Bem-vindo à {empresa}. Estamos à disposição para atendê-lo na unidade {loja} ({cidade}).',
@@ -221,29 +292,45 @@ authRouter.post('/register', async (req: Request, res: Response) => {
       status: 'APPROVED',
     });
 
-    // Audit log in Supabase
+    if (!newTemplate) {
+      await supabaseService.deleteSubscription(subscriptionId);
+      await supabaseService.deleteProfile(newProfile.id);
+      await supabaseService.deleteCompany(newCompany.id);
+      if (supabase && createdAuthUserId) {
+        try { await supabase.auth.admin.deleteUser(createdAuthUserId); } catch (e) { /* ignore */ }
+      }
+      return res.status(500).json({ error: 'Falha ao provisionar template inicial no Supabase.' });
+    }
+
+    // 9. Audit log in public.audit_logs (user_id = profiles.id)
     await supabaseService.createAuditLog({
       id: crypto.randomUUID(),
       companyId: newCompany.id,
       companyName: newCompany.name,
-      userId: newUser.id,
-      userEmail: newUser.email,
+      userId: newProfile.id,
+      userEmail: newProfile.email,
       action: 'COMPANY_REGISTERED',
       resource: 'Auth',
-      details: `Conta corporativa criada com sucesso para ${newCompany.name} (CNPJ: ${newCompany.cnpj}). Usuário gestor: ${newUser.name}.`,
+      details: `Conta corporativa criada com sucesso para ${newCompany.name} (CNPJ: ${newCompany.cnpj}). Usuário gestor: ${newProfile.name}.`,
       ipAddress: req.ip || '127.0.0.1',
     });
 
     return res.status(201).json({
       message: 'Conta corporativa criada com sucesso!',
-      token: `token_${newUser.id}`,
-      user: newUser,
+      token: `token_${newProfile.id}`,
+      user: newProfile,
       company: newCompany,
     });
   } catch (error: any) {
     console.error('[AuthRoutes] Register error:', error);
     if (createdCompanyId) {
       try { await supabaseService.deleteCompany(createdCompanyId); } catch (e) { /* ignore */ }
+    }
+    if (createdAuthUserId) {
+      const supabase = getSupabase();
+      if (supabase) {
+        try { await supabase.auth.admin.deleteUser(createdAuthUserId); } catch (e) { /* ignore */ }
+      }
     }
     return res.status(500).json({ error: error?.message || 'Erro ao cadastrar empresa.' });
   }
