@@ -6,11 +6,15 @@ import { Input } from '../components/ui/Input.js';
 import { ShieldCheck, Sparkles, Building2, Send, Lock, Mail, Phone, User, CheckCircle2 } from 'lucide-react';
 
 interface AuthLayoutProps {
-  mode: 'login' | 'cadastro' | 'admin-login';
-  navigate: (route: string) => void;
+  mode?: 'login' | 'cadastro' | 'admin-login' | 'register';
+  type?: 'login' | 'cadastro' | 'admin-login' | 'register';
+  navigate?: (route: string) => void;
+  onNavigate?: (route: string) => void;
 }
 
-export const AuthLayout: React.FC<AuthLayoutProps> = ({ mode, navigate }) => {
+export const AuthLayout: React.FC<AuthLayoutProps> = (props) => {
+  const mode = props.mode === 'register' ? 'cadastro' : props.type === 'register' ? 'cadastro' : (props.mode || props.type || 'login');
+  const navigate = props.navigate || props.onNavigate || ((route: string) => { window.location.pathname = route; });
   const { login, adminLogin, register, switchProfileById } = useAuth();
   const { showToast } = useToast();
 

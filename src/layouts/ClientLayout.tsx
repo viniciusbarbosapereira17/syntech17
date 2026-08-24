@@ -24,11 +24,16 @@ import {
 
 interface ClientLayoutProps {
   children: React.ReactNode;
-  currentRoute: string;
-  navigate: (route: string) => void;
+  currentRoute?: string;
+  currentPath?: string;
+  navigate?: (route: string) => void;
+  onNavigate?: (route: string) => void;
 }
 
-export const ClientLayout: React.FC<ClientLayoutProps> = ({ children, currentRoute, navigate }) => {
+export const ClientLayout: React.FC<ClientLayoutProps> = (props) => {
+  const { children } = props;
+  const currentRoute = props.currentRoute || props.currentPath || '/dashboard';
+  const navigate = props.navigate || props.onNavigate || ((route: string) => { window.location.pathname = route; });
   const { user, company, subscription, logout, switchProfileById } = useAuth();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);

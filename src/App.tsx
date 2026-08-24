@@ -55,14 +55,14 @@ const RouterView: React.FC = () => {
 
   // Public / Auth routes
   if (currentPath === '/login' || currentPath === '/cadastro' || currentPath === '/admin/login' || (!isAuthenticated && !currentPath.startsWith('/admin'))) {
-    const authType = currentPath === '/cadastro' ? 'register' : currentPath === '/admin/login' ? 'admin-login' : 'login';
-    return <AuthLayout type={authType} onNavigate={navigate} />;
+    const authMode = currentPath === '/cadastro' ? 'cadastro' : currentPath === '/admin/login' ? 'admin-login' : 'login';
+    return <AuthLayout mode={authMode} navigate={navigate} />;
   }
 
   // Admin Routes
   if (currentPath.startsWith('/admin')) {
     if (!isAuthenticated) {
-      return <AuthLayout type="admin-login" onNavigate={navigate} />;
+      return <AuthLayout mode="admin-login" navigate={navigate} />;
     }
 
     const renderAdminPage = () => {
@@ -94,7 +94,7 @@ const RouterView: React.FC = () => {
     };
 
     return (
-      <AdminLayout currentPath={currentPath} onNavigate={navigate}>
+      <AdminLayout currentRoute={currentPath} navigate={navigate}>
         {renderAdminPage()}
       </AdminLayout>
     );
@@ -109,9 +109,9 @@ const RouterView: React.FC = () => {
       case '/contatos':
         return <ContactsPage />;
       case '/listas':
-        return <ListsPage />;
+        return <ListsPage navigate={navigate} />;
       case '/mensagens':
-        return <MessagesPage />;
+        return <MessagesPage navigate={navigate} />;
       case '/templates':
         return <TemplatesPage />;
       case '/campanhas':
@@ -130,7 +130,7 @@ const RouterView: React.FC = () => {
   };
 
   return (
-    <ClientLayout currentPath={currentPath} onNavigate={navigate}>
+    <ClientLayout currentRoute={currentPath} navigate={navigate}>
       {renderClientPage()}
     </ClientLayout>
   );

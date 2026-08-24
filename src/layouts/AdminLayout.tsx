@@ -23,11 +23,16 @@ import {
 
 interface AdminLayoutProps {
   children: React.ReactNode;
-  currentRoute: string;
-  navigate: (route: string) => void;
+  currentRoute?: string;
+  currentPath?: string;
+  navigate?: (route: string) => void;
+  onNavigate?: (route: string) => void;
 }
 
-export const AdminLayout: React.FC<AdminLayoutProps> = ({ children, currentRoute, navigate }) => {
+export const AdminLayout: React.FC<AdminLayoutProps> = (props) => {
+  const { children } = props;
+  const currentRoute = props.currentRoute || props.currentPath || '/admin/dashboard';
+  const navigate = props.navigate || props.onNavigate || ((route: string) => { window.location.pathname = route; });
   const { user, logout, switchProfileById } = useAuth();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isDemoSwitcherOpen, setIsDemoSwitcherOpen] = useState(false);

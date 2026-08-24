@@ -2,11 +2,12 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "syntech-dc",
   "main": "backend/worker.ts",
-  "compatibility_date": "2026-08-21",
+  "compatibility_date": "2026-08-24",
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
   }
 }
